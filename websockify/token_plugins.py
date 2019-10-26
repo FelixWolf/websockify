@@ -157,3 +157,61 @@ class TokenRedis(object):
             combo = simplejson.loads(stuff.decode("utf-8"))
             pair = combo["host"]
             return pair.split(':')
+
+class TokenPostgres(object):
+    def __init__(self, src):
+        try:
+            import psycopg2
+            import urllib.parse
+        except ImportError as e:
+            print("package psycopg2 not found, are you sure you've installed them correctly?", file=sys.stderr)
+            return None
+        
+        #As much as I'd love to use connection strings for this, postgresql
+        # validates any connection string passed to it, even if just passed
+        # to the parser. So next best thing, Query strings!
+        self.dbargs = dict(urllib.parse.parse_qsl(src))
+        
+        #Extract the table from the dbargs, because while psycopg2 will accept
+        # the argument, it isn't a valid argument. Removing it from the dbargs
+        # to future proof it.
+        # Also this makes it optional and defaults to "websockify_tokens"
+        table = self.dbargs.pop("table") if "table" in self.dbargs else "websockify_tokens"
+        
+        #Prepare the statement. This is safe because we are only inserting the
+        # table name, which is provided by the SysOp.
+        #For reference, we are replacing {} in this, not the %s.
+        self.statement = "SELECT host, port FROM {} WHERE token = %s LIMIT 1".format(table)
+        
+        #Define handle for sanity reasons and let connect do the rest
+        self.handle = None
+        self.connect()
+    
+    def connect(self):
+        #Assume what the user supplied was correct, this should throw a error
+        # otherwise, which should help with solving the issue.
+        self.handle = psycopg2.connect(**self.dbargs)
+        
+        #Set readonly to True for added security, We shouldn't be changing stuff anyway.
+        self.handle.set_session(readonly=True, autocommit=True)
+    
+    def lookup(self, token):
+        #Check if we are connected, otherwise reconnect.
+        if self.handle.closed:
+            self.connect()
+        
+        #Fetch the data from the database.
+        cur = self.handle.cursor()
+        cur.execute(self.statement, (token, ))
+        result = cur.fetchall()
+        cur.close()
+        
+        #Postgres always returns a array, even if we limited to 1. It is empty
+        # if nothing was found.
+        if len(result) > 0:
+            #Assuming no one messed with the syntax, this should return a
+            # tuple of (str Host, int Port).
+            return result[0]
+        
+        return None
+    
